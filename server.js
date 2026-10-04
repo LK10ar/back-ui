@@ -43,7 +43,12 @@ function requireAuth(req, res, next) {
 
 /* ------------------------------- Routes ------------------------------- */
 app.get('/', (_req, res) => res.json({ name: 'uipact-api', ok: true }));
-app.get('/api/health', (_req, res) => res.json({ ok: true })); // à pinguer toutes les 5 min pour éviter l'endormissement de Render
+let dbError = 'connexion en cours…';
+// à pinguer toutes les 5 min pour éviter l'endormissement de Render ; indique aussi si la base répond (et pourquoi sinon)
+app.get('/api/health', (_req, res) => {
+  const db = mongoose.connection.readyState === 1;
+  res.json({ ok: true, db, ...(db ? {} : { dbError }) });
+});
 
 app.post('/api/login',
   rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { error: 'Trop de tentatives, réessayez dans 15 minutes.' } }),
@@ -164,9 +169,24 @@ app.post('/api/upload', requireAuth, upload.single('file'), wrap(async (req, res
 // eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
   console.error(err);
+  if (/buffering timed out|Server selection|ECONNREFUSED|ENOTFOUND/i.test(err.message || '')) {
+    return res.status(503).json({ error: 'Base de données momentanément indisponible, réessayez dans un instant.' });
+  }
   res.status(err instanceof multer.MulterError ? 400 : 500).json({ error: err.message || 'Erreur serveur' });
 });
 
-mongoose.connect(MONGODB_URI)
-  .then(() => app.listen(PORT, () => console.log(`API prête sur le port ${PORT}`)))
-  .catch((e) => { console.error('Connexion MongoDB impossible :', e.message); process.exit(1); });
+// Le serveur démarre toujours (Render le voit « Live ») ; la connexion MongoDB se fait en arrière-plan et se réessaie toute seule.
+mongoose.set('bufferTimeoutMS', 8000);
+async function connectDb() {
+  try {
+    await mongoose.connect(MONGODB_URI, { serverSelectionTimeoutMS: 15000 });
+    dbError = null;
+    console.log('MongoDB connecté');
+  } catch (e) {
+    dbError = String(e.message).slice(0, 300);
+    console.error('Connexion MongoDB impossible :', e.message, '— nouvel essai dans 15 s');
+    setTimeout(connectDb, 15000);
+  }
+}
+app.listen(PORT, () => console.log(`API prête sur le port ${PORT}`));
+connectDb();
