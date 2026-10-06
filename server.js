@@ -9,8 +9,9 @@ import rateLimit from 'express-rate-limit';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import Setting from './models/Setting.js';
 import Message from './models/Message.js';
+import Media from './models/Media.js';
 import { translateText } from './translate.js';
-import { cleanSettings, publicView, LANGS } from './sanitize.js';
+import { cleanSettings, publicView, isLang } from './sanitize.js';
 
 const {
   PORT = 5000, MONGODB_URI, ADMIN_PASSWORD, JWT_SECRET, CORS_ORIGINS = '',
@@ -62,7 +63,7 @@ app.post('/api/login',
 const getData = async () => (await Setting.findOne({ key: 'site' }))?.data ?? {};
 
 app.get('/api/site', wrap(async (req, res) => {
-  const lang = LANGS.includes(req.query.lang) ? req.query.lang : 'fr';
+  const lang = isLang(req.query.lang) ? req.query.lang : 'fr';
   res.set('Cache-Control', 'no-store');
   res.json(publicView(await getData(), lang));
 }));
@@ -83,7 +84,7 @@ app.put('/api/settings', requireAuth, wrap(async (req, res) => {
 app.post('/api/translate', requireAuth, wrap(async (req, res) => {
   const { from, to } = req.body || {};
   const texts = Array.isArray(req.body?.texts) ? req.body.texts.map((t) => str(t, 2000)) : [];
-  if (!(from === 'auto' || LANGS.includes(from)) || !LANGS.includes(to) || from === to) return res.status(400).json({ error: 'Langues invalides' });
+  if (!(from === 'auto' || isLang(from)) || !isLang(to) || from === to) return res.status(400).json({ error: 'Langues invalides' });
   if (texts.length === 0 || texts.length > 80 || texts.join('').length > 12000) return res.status(400).json({ error: 'Trop de texte à traduire en une fois' });
   const out = new Array(texts.length);
   const stats = { errors: [] };
@@ -153,16 +154,46 @@ app.delete('/api/messages/:id', requireAuth, wrap(async (req, res) => {
 const r2Ready = R2_ACCOUNT_ID && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R2_BUCKET && R2_PUBLIC_URL;
 const s3 = r2Ready ? new S3Client({ region: 'auto', endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`, credentials: { accessKeyId: R2_ACCESS_KEY_ID, secretAccessKey: R2_SECRET_ACCESS_KEY } }) : null;
 const EXT = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif', 'video/mp4': 'mp4', 'video/webm': 'webm' };
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 }, fileFilter: (_req, file, cb) => cb(null, file.mimetype in EXT) });
+const IMG_OK = /^image\/(jpeg|png|webp|gif|avif)$/;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 }, fileFilter: (_req, file, cb) => cb(null, file.mimetype in EXT && (!!s3 || IMG_OK.test(file.mimetype))) });
+
+const IMG = /^image\/(jpeg|png|webp|gif|avif)$/;
+const baseUrl = (req) => (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
 
 app.post('/api/upload', requireAuth, upload.single('file'), wrap(async (req, res) => {
-  if (!s3) return res.status(501).json({ error: "Envoi de fichiers non configuré : utilisez « URL » dans l'admin, ou renseignez les variables R2_* sur Render." });
-  if (!req.file) return res.status(400).json({ error: 'Fichier invalide (images jpg/png/webp/gif/avif, vidéos mp4/webm — 100 Mo max)' });
+  if (!req.file) return res.status(400).json({ error: 'Fichier invalide (images jpg/png/webp/gif/avif — les vidéos demandent Cloudflare R2)' });
   const isVideo = req.file.mimetype.startsWith('video/');
-  if (!isVideo && req.file.size > 20 * 1024 * 1024) return res.status(400).json({ error: 'Image trop lourde (20 Mo max)' });
-  const key = `uipact/${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${EXT[req.file.mimetype]}`;
-  await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET, Key: key, Body: req.file.buffer, ContentType: req.file.mimetype }));
-  res.json({ url: `${R2_PUBLIC_URL.replace(/\/$/, '')}/${key}`, type: isVideo ? 'video' : 'image' });
+  if (s3) { // Cloudflare R2 configuré : images et vidéos
+    if (!isVideo && req.file.size > 20 * 1024 * 1024) return res.status(400).json({ error: 'Image trop lourde (20 Mo max)' });
+    const key = `uipact/${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${EXT[req.file.mimetype]}`;
+    await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET, Key: key, Body: req.file.buffer, ContentType: req.file.mimetype }));
+    return res.json({ url: `${R2_PUBLIC_URL.replace(/\/$/, '')}/${key}`, type: isVideo ? 'video' : 'image' });
+  }
+  // Sans R2 : l'image est rangée dans MongoDB (l'admin la réduit déjà avant l'envoi)
+  if (!IMG.test(req.file.mimetype)) return res.status(400).json({ error: 'Sans Cloudflare R2, seules les images sont acceptées.' });
+  if (req.file.size > 8 * 1024 * 1024) return res.status(400).json({ error: 'Image trop lourde (8 Mo max).' });
+  const m = await Media.create({ name: str(req.file.originalname, 160), mime: req.file.mimetype, size: req.file.size, data: req.file.buffer });
+  res.json({ url: `${baseUrl(req)}/media/${m._id}`, id: m._id, type: 'image' });
+}));
+
+// Photos rangées dans MongoDB : lecture publique (le site les affiche), liste et suppression réservées à l'admin
+app.get('/media/:id', wrap(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).end();
+  const m = await Media.findById(req.params.id);
+  if (!m) return res.status(404).end();
+  res.set({ 'Content-Type': m.mime, 'Cache-Control': 'public, max-age=31536000, immutable', 'Cross-Origin-Resource-Policy': 'cross-origin', 'X-Content-Type-Options': 'nosniff' });
+  res.send(m.data);
+}));
+
+app.get('/api/media', requireAuth, wrap(async (req, res) => {
+  const list = await Media.find({}, { data: 0 }).sort({ createdAt: -1 }).limit(300);
+  res.json(list.map((m) => ({ id: m._id, name: m.name, size: m.size, url: `${baseUrl(req)}/media/${m._id}`, createdAt: m.createdAt })));
+}));
+
+app.delete('/api/media/:id', requireAuth, wrap(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) return res.status(404).json({ error: 'Photo introuvable' });
+  await Media.findByIdAndDelete(req.params.id);
+  res.json({ ok: true });
 }));
 
 /* ------------------------------- Erreurs ------------------------------- */
