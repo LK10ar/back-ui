@@ -4,7 +4,9 @@
 
 const MARKS = /(\*[^*\n]+\*|~[^~\n]+~|\^[^^\n]+\^|\[blue:[^\]\n]+\])/;
 
-const DEEPL_TARGET = { fr: 'FR', en: 'EN-GB', es: 'ES', de: 'DE', it: 'IT', pt: 'PT-PT', nl: 'NL' };
+const DEEPL_TARGET = { fr: 'FR', en: 'EN-GB', es: 'ES', de: 'DE', it: 'IT', pt: 'PT-PT', nl: 'NL', zh: 'ZH-HANS', no: 'NB' };
+// Google et MyMemory attendent « zh-CN » pour le chinois
+const web = (c) => (c === 'zh' ? 'zh-CN' : c);
 
 const decodeEntities = (t) =>
   t
@@ -46,7 +48,7 @@ async function deepl(text, from, to, f, key) {
 }
 
 async function google(text, from, to, f) {
-  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${from}&tl=${to}&dt=t&q=${encodeURIComponent(text)}`;
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${web(from)}&tl=${web(to)}&dt=t&q=${encodeURIComponent(text)}`;
   const r = await f(url, { signal: AbortSignal.timeout(12000) });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const j = await r.json();
@@ -55,7 +57,7 @@ async function google(text, from, to, f) {
 }
 
 async function myMemory(text, from, to, f, email) {
-  const pair = `${from === 'auto' ? 'Autodetect' : from}|${to}`;
+  const pair = `${from === 'auto' ? 'Autodetect' : web(from)}|${web(to)}`;
   const out = [];
   for (const piece of splitChunks(text, 450)) {
     const url =
