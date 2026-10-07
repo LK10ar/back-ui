@@ -10,7 +10,7 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import Setting from './models/Setting.js';
 import Message from './models/Message.js';
 import Media from './models/Media.js';
-import { translateText } from './translate.js';
+import { translateText, engineStatus } from './translate.js';
 import { cleanSettings, publicView, isLang } from './sanitize.js';
 
 const {
@@ -81,6 +81,13 @@ app.put('/api/settings', requireAuth, wrap(async (req, res) => {
 }));
 
 /* ------------------------- Traduction automatique ------------------------- */
+// Clés des moteurs de traduction (toutes facultatives) : définies dans les variables d'environnement de Render
+const tOpts = () => ({
+  email: CONTACT_TO, deeplKey: process.env.DEEPL_API_KEY, azureKey: process.env.AZURE_TRANSLATOR_KEY, azureRegion: process.env.AZURE_TRANSLATOR_REGION,
+  googleKey: process.env.GOOGLE_TRANSLATE_KEY, libreUrl: process.env.LIBRETRANSLATE_URL, libreKey: process.env.LIBRETRANSLATE_KEY,
+});
+app.get('/api/translate/engines', requireAuth, (_req, res) => res.json(engineStatus(tOpts())));
+
 app.post('/api/translate', requireAuth, wrap(async (req, res) => {
   const { from, to } = req.body || {};
   const texts = Array.isArray(req.body?.texts) ? req.body.texts.map((t) => str(t, 2000)) : [];
@@ -89,10 +96,11 @@ app.post('/api/translate', requireAuth, wrap(async (req, res) => {
   const out = new Array(texts.length);
   const stats = { errors: [] };
   let next = 0;
-  await Promise.all(Array.from({ length: 4 }, async () => { // 4 traductions en parallèle au maximum
+  const paid = !!(tOpts().deeplKey || tOpts().azureKey || tOpts().googleKey || tOpts().libreUrl);
+  await Promise.all(Array.from({ length: paid ? 4 : 2 }, async () => { // moins de requêtes en parallèle avec les moteurs gratuits (évite les erreurs 429)
     while (next < texts.length) {
       const i = next++;
-      out[i] = await translateText(texts[i], from, to, { email: CONTACT_TO, deeplKey: process.env.DEEPL_API_KEY, stats });
+      out[i] = await translateText(texts[i], from, to, { ...tOpts(), stats });
     }
   }));
   const { errors, ...engines } = stats;
