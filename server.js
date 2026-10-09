@@ -94,17 +94,20 @@ app.post('/api/translate', requireAuth, wrap(async (req, res) => {
   if (!(from === 'auto' || isLang(from)) || !isLang(to) || from === to) return res.status(400).json({ error: 'Langues invalides' });
   if (texts.length === 0 || texts.length > 80 || texts.join('').length > 12000) return res.status(400).json({ error: 'Trop de texte à traduire en une fois' });
   const out = new Array(texts.length);
+  const failures = [];
   const stats = { errors: [] };
   let next = 0;
   const paid = !!(tOpts().deeplKey || tOpts().azureKey || tOpts().googleKey || tOpts().libreUrl);
   await Promise.all(Array.from({ length: paid ? 4 : 2 }, async () => { // moins de requêtes en parallèle avec les moteurs gratuits (évite les erreurs 429)
     while (next < texts.length) {
       const i = next++;
-      out[i] = await translateText(texts[i], from, to, { ...tOpts(), stats });
+      try { out[i] = await translateText(texts[i], from, to, { ...tOpts(), stats }); }
+      catch (e) { out[i] = null; failures.push(e.message); } // un texte raté n'annule pas les autres : l'admin enregistre ce qui a marché
     }
   }));
   const { errors, ...engines } = stats;
-  res.json({ texts: out, engines, errors: errors.slice(0, 4) });
+  if (out.every((x) => x === null)) return res.status(502).json({ error: failures[0] || 'Traduction impossible' });
+  res.json({ texts: out, engines, errors: [...new Set([...errors, ...failures])].slice(0, 4), partial: out.some((x) => x === null) });
 }));
 
 /* ------------------------------ Contact ------------------------------ */
