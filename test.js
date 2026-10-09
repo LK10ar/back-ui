@@ -61,4 +61,7 @@ assert.equal(st.find((e) => e.id === 'deepl').ok, true);
 assert.equal(st.find((e) => e.id === 'azure').ok, false);
 assert.ok(st.find((e) => e.id === 'lingva').ok);
 
+const tm = cleanSettings({ trMeta: { en: { index__e0_0: 'abc12' } } });
+assert.equal(tm.trMeta.en.index__e0_0, 'abc12');
+assert.equal(publicView({ trMeta: { en: {} }, translations: {} }, 'en').trMeta, undefined);   // jamais envoyé aux visiteurs
 console.log('✓ tous les tests passent');
