@@ -1,7 +1,7 @@
 // Nettoyage des réglages envoyés par l'admin (aucune dépendance : testé par `npm test`).
 const HEX = /^#[0-9a-fA-F]{6}$/;
 export const THEME_KEYS = ['gold', 'gold2', 'navy', 'navy2', 'bg', 'bgAlt', 'card', 'text', 'lightBg', 'lightAlt'];
-export const SECTIONS = ['theme', 'header', 'footer', 'texts', 'hidden', 'blocks', 'images', 'carousels', 'translations', 'languages', 'langNames', 'seo', 'sections'];
+export const SECTIONS = ['theme', 'header', 'footer', 'texts', 'hidden', 'blocks', 'images', 'carousels', 'translations', 'languages', 'langNames', 'seo', 'sections', 'trMeta'];
 // Toute langue est acceptée à partir d'un code ISO (fr, en, ar, zh, pt-br…) : l'admin peut en ajouter librement
 export const isLang = (c) => typeof c === 'string' && /^[a-z]{2,3}(-[a-z]{2,4})?$/.test(c);
 const BAD_URL = /^\s*(javascript|vbscript|data):/i;
@@ -48,6 +48,7 @@ export function cleanSettings(body = {}) {
 // Version publique : on n'envoie au visiteur que la langue demandée
 export function publicView(data = {}, lang = 'fr') {
   const out = { ...data };
+  delete out.trMeta; // suivi de la traduction : réservé à l'admin
   const tr = (data.translations || {})[lang];
   out.translations = tr ? { [lang]: tr } : {};
   return out;
