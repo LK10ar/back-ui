@@ -30,42 +30,22 @@ export function splitChunks(text, max) {
   return chunks.flatMap((c) => (c.length > max ? c.match(new RegExp(`.{1,${max}}`, 'g')) : [c]));
 }
 
-const DEEPL_API_KEY = '87de036e-44c7-4507-91d6-3731f3ad7eb8:fx';
-
-async function deepl(text, from, to, f = fetch, key = DEEPL_API_KEY) {
-const host = key.endsWith(':fx')
-? 'api-free.deepl.com'
-: 'api.deepl.com';
-const body = new URLSearchParams({
-text,
-target_lang: DEEPL_TARGET[to] || to.toUpperCase()
-});
-if (from !== 'auto') {
-body.set('source_lang', from.toUpperCase());
+async function deepl(text, from, to, f, key) {
+  const host = key.endsWith(':fx') ? 'api-free.deepl.com' : 'api.deepl.com';
+  const body = new URLSearchParams({ text, target_lang: DEEPL_TARGET[to] || to.toUpperCase() });
+  if (from !== 'auto') body.set('source_lang', from.toUpperCase());
+  const r = await f(`https://${host}/v2/translate`, {
+    method: 'POST',
+    headers: { Authorization: `DeepL-Auth-Key ${key}` },
+    body,
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const j = await r.json();
+  const out = j?.translations?.[0]?.text;
+  if (!out) throw new Error('réponse inattendue');
+  return out;
 }
-const r = await f(`https://${host}/v2/translate`, {
-method: 'POST',
-headers: {
-Authorization: `DeepL-Auth-Key ${key}`,
-'Content-Type': 'application/x-www-form-urlencoded'
-},
-body,
-signal: AbortSignal.timeout(12000)
-});
-if (!r.ok) {
-throw new Error(`HTTP ${r.status}: ${await r.text()}`);
-}
-const j = await r.json();
-const out = j?.translations?.[0]?.text;
-if (!out) {
-throw new Error('Réponse inattendue de DeepL');
-}
-return out;
-}
-// Exemple d'utilisation :
-const traduction = await deepl('Bonjour le monde', 'fr', 'en');
-console.log(traduction);
-
 
 async function google(text, from, to, f) {
   const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${web(from)}&tl=${web(to)}&dt=t&q=${encodeURIComponent(text)}`;
